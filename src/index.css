@@ -1,0 +1,148 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background-color: #F1F5F9;
+    color: #0F172A;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.hero-gradient {
+  background-color: #1E40AF;
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.16) 1.25px, transparent 1.25px),
+    linear-gradient(135deg, #1E40AF 0%, #312E81 100%);
+  background-size: 20px 20px, 100% 100%;
+  background-position: 0 0, 0 0;
+  color: #FFFFFF;
+}
+
+.rail-royal {
+  background-color: #1E40AF;
+  color: #FFFFFF;
+}
+
+.logo-coral {
+  background-color: #F97316;
+  color: #FFFFFF;
+}
+
+.btn-coral {
+  background-color: #F97316;
+  color: #FFFFFF;
+}
+
+.btn-coral:hover:not(:disabled) {
+  background-color: #EA580C;
+}
+
+.btn-royal {
+  background-color: #1E40AF;
+  color: #FFFFFF;
+}
+
+.btn-royal:hover:not(:disabled) {
+  background-color: #1E3A8A;
+}
+
+@keyframes fadeRise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-rise {
+  animation: fadeRise 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-rise {
+    animation: none;
+  }
+}
+
+.markdown-body p {
+  margin-bottom: 0.625rem;
+}
+
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  margin-left: 1.25rem;
+  margin-bottom: 0.75rem;
+  list-style-type: disc;
+}
+
+.markdown-body ol {
+  list-style-type: decimal;
+}
+
+.markdown-body li {
+  margin-bottom: 0.25rem;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  font-weight: 700;
+  color: #0F172A;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.markdown-body h1 {
+  font-size: 1.375rem;
+}
+
+.markdown-body h2 {
+  font-size: 1.125rem;
+  border-bottom: 1px solid #E2E8F0;
+  padding-bottom: 0.35rem;
+}
+
+.markdown-body h3 {
+  font-size: 1rem;
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0 1rem;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid #E2E8F0;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.markdown-body th {
+  background-color: #F8FAFC;
+  font-weight: 700;
+  color: #1E293B;
+}
+
+.markdown-body a {
+  color: #1E40AF;
+  text-decoration: underline;
+}

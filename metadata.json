@@ -1,0 +1,8 @@
+{
+  "name": "NDKC Quality Cost Audit",
+  "description": "Total Quality Management (TQM) interview and Cost of Quality ledger for Notre Dame of Kidapawan College.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

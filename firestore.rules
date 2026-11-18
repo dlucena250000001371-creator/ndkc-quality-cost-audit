@@ -1,0 +1,262 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function isValidProfile(data, userId) {
+      return data.keys().hasAll([
+        'uid', 'displayName', 'photoURL', 'office', 'roleCategory',
+        'position', 'jobDescription', 'yearsInRole', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'uid', 'displayName', 'photoURL', 'office', 'roleCategory',
+        'position', 'jobDescription', 'yearsInRole', 'createdAt', 'updatedAt'
+      ]) &&
+      data.uid is string && data.uid == userId && data.uid == request.auth.uid &&
+      data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+      data.photoURL is string && data.photoURL.size() <= 1000 &&
+      data.office is string && data.office.size() >= 1 && data.office.size() <= 120 &&
+      data.roleCategory in ['Faculty', 'Academic Administrator', 'Support Office'] &&
+      data.position is string && data.position.size() >= 1 && data.position.size() <= 120 &&
+      data.jobDescription is string && data.jobDescription.size() >= 1 && data.jobDescription.size() <= 1000 &&
+      data.yearsInRole is int && data.yearsInRole >= 0 && data.yearsInRole <= 50 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidProfileSnapshot(snap) {
+      return snap is map &&
+        snap.keys().hasAll(['displayName', 'photoURL', 'office', 'roleCategory', 'position', 'jobDescription', 'yearsInRole']) &&
+        snap.keys().hasOnly(['displayName', 'photoURL', 'office', 'roleCategory', 'position', 'jobDescription', 'yearsInRole']) &&
+        snap.displayName is string && snap.displayName.size() <= 120 &&
+        snap.photoURL is string && snap.photoURL.size() <= 1000 &&
+        snap.office is string && snap.office.size() <= 120 &&
+        snap.roleCategory in ['Faculty', 'Academic Administrator', 'Support Office'] &&
+        snap.position is string && snap.position.size() <= 120 &&
+        snap.jobDescription is string && snap.jobDescription.size() <= 1000 &&
+        snap.yearsInRole is int && snap.yearsInRole >= 0 && snap.yearsInRole <= 50;
+    }
+
+    function isValidCostSheet(sheet) {
+      return sheet == null || (
+        sheet is map &&
+        sheet.keys().hasAll([
+          'processName', 'processCode', 'summary', 'activities', 'rootCauses',
+          'kaizenActions', 'strengths', 'categoryTotals', 'totalHours',
+          'copqHours', 'copqShare', 'level', 'builtAt'
+        ]) &&
+        sheet.keys().hasOnly([
+          'processName', 'processCode', 'summary', 'activities', 'rootCauses',
+          'kaizenActions', 'strengths', 'categoryTotals', 'totalHours',
+          'copqHours', 'copqShare', 'level', 'builtAt'
+        ]) &&
+        sheet.processName is string && sheet.processName.size() <= 150 &&
+        sheet.processCode is string && sheet.processCode.size() <= 40 &&
+        sheet.summary is string && sheet.summary.size() <= 1500 &&
+        sheet.activities is list && sheet.activities.size() <= 60 &&
+        sheet.rootCauses is list && sheet.rootCauses.size() <= 20 &&
+        sheet.kaizenActions is list && sheet.kaizenActions.size() <= 20 &&
+        sheet.strengths is list && sheet.strengths.size() <= 20 &&
+        sheet.categoryTotals is map &&
+        sheet.totalHours is number && sheet.totalHours >= 0 &&
+        sheet.copqHours is number && sheet.copqHours >= 0 &&
+        sheet.copqShare is number && sheet.copqShare >= 0 && sheet.copqShare <= 100 &&
+        sheet.level in ['Healthy', 'Watch', 'High', 'Not enough data'] &&
+        sheet.builtAt is string && sheet.builtAt.size() <= 60
+      );
+    }
+
+    function isValidCostAudit(data, userId) {
+      return data.keys().hasAll([
+        'userId', 'status', 'questionNumber', 'answerCount',
+        'profileSnapshot', 'costSheet', 'createdAt', 'updatedAt', 'completedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'userId', 'status', 'questionNumber', 'answerCount',
+        'profileSnapshot', 'costSheet', 'createdAt', 'updatedAt', 'completedAt'
+      ]) &&
+      data.userId is string && data.userId == userId && data.userId == request.auth.uid &&
+      data.status in ['in_progress', 'completed'] &&
+      data.questionNumber is int && data.questionNumber >= 1 && data.questionNumber <= 7 &&
+      data.answerCount is int && data.answerCount >= 0 && data.answerCount <= 50 &&
+      isValidProfileSnapshot(data.profileSnapshot) &&
+      isValidCostSheet(data.costSheet) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp &&
+      (data.completedAt == null || data.completedAt is timestamp);
+    }
+
+    function isValidInteraction(data, userId) {
+      return data.keys().hasAll([
+        'userId', 'auditId', 'role', 'content', 'questionNumber', 'timestamp', 'modelUsed', 'clientMessageId'
+      ]) &&
+      data.keys().hasOnly([
+        'userId', 'auditId', 'role', 'content', 'questionNumber', 'timestamp', 'modelUsed', 'clientMessageId'
+      ]) &&
+      data.userId is string && data.userId == userId && data.userId == request.auth.uid &&
+      isValidId(data.auditId) &&
+      data.role in ['user', 'assistant'] &&
+      data.content is string && data.content.size() >= 1 && data.content.size() <= 5000 &&
+      (data.role == 'assistant' || data.content.size() <= 2000) &&
+      data.questionNumber is int && data.questionNumber >= 1 && data.questionNumber <= 7 &&
+      data.timestamp is timestamp &&
+      data.modelUsed is string && data.modelUsed.size() <= 100 &&
+      data.clientMessageId is string && data.clientMessageId.size() <= 128;
+    }
+
+    function isValidBaseline(data) {
+      return data.keys().hasAll(['documents', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly(['documents', 'updatedAt', 'updatedBy']) &&
+        data.documents is list && data.documents.size() <= 100 &&
+        (data.documents.size() == 0 || (
+          data.documents[0] is map &&
+          data.documents[0].title is string &&
+          data.documents[0].text is string
+        )) &&
+        data.updatedAt is timestamp &&
+        data.updatedBy is string && data.updatedBy == request.auth.uid;
+    }
+
+    function isValidLedgerReport(data) {
+      return data.keys().hasAll(['title', 'markdown', 'stats', 'modelUsed', 'createdAt', 'createdBy']) &&
+        data.keys().hasOnly(['title', 'markdown', 'stats', 'modelUsed', 'createdAt', 'createdBy']) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.markdown is string && data.markdown.size() >= 1 && data.markdown.size() <= 100000 &&
+        data.stats is map &&
+        data.modelUsed is string && data.modelUsed.size() >= 1 && data.modelUsed.size() <= 100 &&
+        data.createdAt is timestamp &&
+        data.createdBy is string && data.createdBy == request.auth.uid;
+    }
+
+    match /admins/{uid} {
+      allow get: if isSignedIn() && request.auth.uid == uid && isValidId(uid);
+      allow list, create, update, delete: if false;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidProfile(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isOwner(userId) &&
+        isValidProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+      allow delete: if false;
+
+      match /costAudits/{auditId} {
+        allow get: if isValidId(userId) && isValidId(auditId) && (isOwner(userId) || isAdmin());
+        allow list: if isOwner(userId) || isAdmin();
+        allow create: if isVerifiedUser() &&
+          isValidId(userId) &&
+          isValidId(auditId) &&
+          isOwner(userId) &&
+          isValidCostAudit(incoming(), userId) &&
+          incoming().status == 'in_progress' &&
+          incoming().costSheet == null &&
+          incoming().completedAt == null &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerifiedUser() &&
+          isValidId(userId) &&
+          isValidId(auditId) &&
+          isOwner(userId) &&
+          isValidCostAudit(incoming(), userId) &&
+          existing().status == 'in_progress' &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time && (
+            (incoming().diff(existing()).affectedKeys().hasOnly(['questionNumber', 'answerCount', 'updatedAt']) &&
+             incoming().status == 'in_progress') ||
+            (incoming().diff(existing()).affectedKeys().hasOnly(['status', 'costSheet', 'completedAt', 'updatedAt']) &&
+             incoming().status == 'completed' &&
+             incoming().costSheet != null &&
+             incoming().completedAt == request.time)
+          );
+        allow delete: if false;
+      }
+
+      match /interactions/{interactionId} {
+        allow get: if isValidId(userId) && isValidId(interactionId) && (isOwner(userId) || isAdmin());
+        allow list: if isOwner(userId) || isAdmin();
+        allow create: if isVerifiedUser() &&
+          isValidId(userId) &&
+          isValidId(interactionId) &&
+          isOwner(userId) &&
+          isValidInteraction(incoming(), userId) &&
+          incoming().timestamp == request.time &&
+          (exists(/databases/$(database)/documents/users/$(userId)/costAudits/$(incoming().auditId)) ||
+           existsAfter(/databases/$(database)/documents/users/$(userId)/costAudits/$(incoming().auditId)));
+        allow update, delete: if false;
+      }
+    }
+
+    match /{path=**}/costAudits/{auditId} {
+      allow get: if isValidId(auditId) && isAdmin();
+      allow list: if isAdmin();
+    }
+
+    match /{path=**}/interactions/{interactionId} {
+      allow get: if isValidId(interactionId) && isAdmin();
+      allow list: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow get: if isSignedIn() && settingId == 'qualityBaseline';
+      allow list: if false;
+      allow create, update: if isAdmin() &&
+        settingId == 'qualityBaseline' &&
+        isValidBaseline(incoming()) &&
+        incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /ledgerReports/{reportId} {
+      allow get: if isValidId(reportId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(reportId) &&
+        isValidLedgerReport(incoming()) &&
+        incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isValidId(reportId) && isAdmin();
+    }
+  }
+}
