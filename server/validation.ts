@@ -1,3 +1,10 @@
+import {
+  computeCostSheetMath,
+  createEmptyStatedHours,
+  formatBaselineCode,
+  roundTwo,
+  type RawActivityInput,
+} from '../shared/costMath.ts';
 import type {
   AuditLevel,
   BaselineDoc,
@@ -5,9 +12,10 @@ import type {
   CostCategory,
   CostSheet,
   KaizenAction,
-  QualityCostActivity,
   RoleCategory,
   RootCauseItem,
+  StatedCategoryHours,
+  StatedHoursMap,
 } from '../src/types/audit.ts';
 
 const AUDIT_ID_REGEX = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -56,10 +64,6 @@ export function formatBaselineText(docs: BaselineDoc[]): string {
     .join('\n\n');
 }
 
-function roundTwo(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
 function cleanStr(val: unknown, maxLen: number): string {
   if (typeof val !== 'string') return '';
   return val.trim().slice(0, maxLen);
@@ -70,6 +74,24 @@ function normalizeCode(code: unknown, validCodes: Set<string>): string {
   const trimmed = code.trim();
   if (!trimmed || trimmed === 'None') return 'None';
   return validCodes.has(trimmed) ? trimmed : 'None';
+}
+
+function parseStatedEntry(rawEntry: unknown): StatedCategoryHours {
+  if (!rawEntry || typeof rawEntry !== 'object') {
+    return { hours: null, said: '', peakNote: '' };
+  }
+  const e = rawEntry as Record<string, unknown>;
+  let hours: number | null = null;
+  if (typeof e.hours === 'number' && Number.isFinite(e.hours)) {
+    if (e.hours >= 0 && e.hours <= 80) {
+      hours = roundTwo(e.hours);
+    }
+  }
+  return {
+    hours,
+    said: cleanStr(e.said, 240),
+    peakNote: cleanStr(e.peakNote, 240),
+  };
 }
 
 export function validateAndComputeCostSheet(
@@ -85,8 +107,20 @@ export function validateAndComputeCostSheet(
   const processCode = normalizeCode(obj.processCode, validCodes);
   const summary = cleanStr(obj.summary, 1400);
 
+  const rawStated =
+    obj.statedHours && typeof obj.statedHours === 'object'
+      ? (obj.statedHours as Record<string, unknown>)
+      : {};
+  const statedHours: StatedHoursMap = {
+    ...createEmptyStatedHours(),
+    prevention: parseStatedEntry(rawStated.prevention),
+    appraisal: parseStatedEntry(rawStated.appraisal),
+    internalFailure: parseStatedEntry(rawStated.internalFailure),
+    externalFailure: parseStatedEntry(rawStated.externalFailure),
+  };
+
   const rawActivities = Array.isArray(obj.activities) ? obj.activities.slice(0, 60) : [];
-  const activities: QualityCostActivity[] = [];
+  const parsedRawActivities: RawActivityInput[] = [];
 
   for (const item of rawActivities) {
     if (!item || typeof item !== 'object') continue;
@@ -104,12 +138,17 @@ export function validateAndComputeCostSheet(
     const activity = cleanStr(a.activity, 160);
     if (!activity) continue;
 
-    activities.push({
+    const normalizedActCode = normalizeCode(a.code, validCodes);
+    const resolvedCode =
+      normalizedActCode !== 'None' ? normalizedActCode : processCode;
+
+    parsedRawActivities.push({
       category: cat,
       activity,
       hoursPerWeek,
+      peakOnly: Boolean(a.peakOnly),
       frequency: cleanStr(a.frequency, 100),
-      code: normalizeCode(a.code, validCodes),
+      code: resolvedCode,
       evidenceQuote: cleanStr(a.evidenceQuote, 300),
     });
   }
@@ -132,6 +171,7 @@ export function validateAndComputeCostSheet(
       failure,
       cause,
       contributingFactors: factors,
+      needsApproval: Boolean(rc.needsApproval),
       evidenceQuote: cleanStr(rc.evidenceQuote, 300),
     });
   }
@@ -143,11 +183,13 @@ export function validateAndComputeCostSheet(
     const k = item as Record<string, unknown>;
     const step = cleanStr(k.step, 250);
     if (!step) continue;
+    const normalizedKaizenCode = normalizeCode(k.code, validCodes);
     kaizenActions.push({
       step,
+      target: cleanStr(k.target, 200),
       owner: cleanStr(k.owner, 100) || 'Process Owner',
       measure: cleanStr(k.measure, 140),
-      code: normalizeCode(k.code, validCodes),
+      code: normalizedKaizenCode !== 'None' ? normalizedKaizenCode : processCode,
     });
   }
 
@@ -156,54 +198,29 @@ export function validateAndComputeCostSheet(
     .map((s) => cleanStr(s, 220))
     .filter(Boolean);
 
-  const categoryTotals: CategoryTotals = {
-    Prevention: 0,
-    Appraisal: 0,
-    'Internal Failure': 0,
-    'External Failure': 0,
-  };
-
-  let timedActivitiesCount = 0;
-  for (const act of activities) {
-    if (act.hoursPerWeek !== null) {
-      timedActivitiesCount++;
-      categoryTotals[act.category] = roundTwo(categoryTotals[act.category] + act.hoursPerWeek);
-    }
-  }
-
-  const totalHours = roundTwo(
-    categoryTotals.Prevention +
-      categoryTotals.Appraisal +
-      categoryTotals['Internal Failure'] +
-      categoryTotals['External Failure']
+  const computed = computeCostSheetMath(
+    parsedRawActivities,
+    statedHours,
+    processCode
   );
-
-  const copqHours = roundTwo(
-    categoryTotals['Internal Failure'] + categoryTotals['External Failure']
-  );
-
-  const copqShare = totalHours > 0 ? Math.round((copqHours / totalHours) * 100) : 0;
-
-  let level: AuditLevel = 'Not enough data';
-  if (timedActivitiesCount >= 2 && totalHours > 0) {
-    if (copqShare <= 25) level = 'Healthy';
-    else if (copqShare <= 40) level = 'Watch';
-    else level = 'High';
-  }
 
   return {
     processName,
     processCode,
     summary,
-    activities,
+    statedHours: computed.statedHours,
+    activities: computed.activities,
     rootCauses,
     kaizenActions,
     strengths,
-    categoryTotals,
-    totalHours,
-    copqHours,
-    copqShare,
-    level,
+    categoryTotals: computed.categoryTotals,
+    totalHours: computed.totalHours,
+    copqHours: computed.copqHours,
+    copqShare: computed.copqShare,
+    level: computed.level,
+    checks: computed.checks,
+    confirmedByEmployee: false,
+    hoursEdited: false,
     builtAt: new Date().toISOString(),
   };
 }
@@ -248,7 +265,10 @@ export function checkInterviewRateLimit(uid: string): boolean {
   return true;
 }
 
-export function computeLedgerAggregates(rawAudits: Array<Record<string, unknown>>) {
+export function computeLedgerAggregates(
+  rawAudits: Array<Record<string, unknown>>,
+  codeTitles: Record<string, string> = {}
+) {
   const completedAudits = rawAudits.filter(
     (a) => a.status === 'completed' && a.costSheet && typeof a.costSheet === 'object'
   );
@@ -276,7 +296,6 @@ export function computeLedgerAggregates(rawAudits: Array<Record<string, unknown>
     Appraisal: number;
     'Internal Failure': number;
     'External Failure': number;
-    timedCount: number;
   }
   const processMap = new Map<string, ProcessAgg>();
 
@@ -286,6 +305,8 @@ export function computeLedgerAggregates(rawAudits: Array<Record<string, unknown>
     code: string;
     hoursPerWeek: number;
     cause: string;
+    needsApproval: boolean;
+    peakOnly: boolean;
     roleCategory: string;
   }
   const failureRows: FailureRow[] = [];
@@ -295,10 +316,13 @@ export function computeLedgerAggregates(rawAudits: Array<Record<string, unknown>
     failure: string;
     cause: string;
     contributingFactors: string[];
+    needsApproval: boolean;
   }> = [];
   const kaizenEntries: Array<{
+    rawProcessCode: string;
     processCode: string;
     step: string;
+    target: string;
     owner: string;
     measure: string;
     code: string;
@@ -333,6 +357,7 @@ export function computeLedgerAggregates(rawAudits: Array<Record<string, unknown>
     );
 
     const pCode = sheet.processCode || 'None';
+    const pCodeLabel = formatBaselineCode(pCode, codeTitles);
     if (!processMap.has(pCode)) {
       processMap.set(pCode, {
         code: pCode,
@@ -342,7 +367,6 @@ export function computeLedgerAggregates(rawAudits: Array<Record<string, unknown>
         Appraisal: 0,
         'Internal Failure': 0,
         'External Failure': 0,
-        timedCount: 0,
       });
     }
     const pAgg = processMap.get(pCode)!;
@@ -361,25 +385,22 @@ export function computeLedgerAggregates(rawAudits: Array<Record<string, unknown>
     const rootCauses = Array.isArray(sheet.rootCauses) ? sheet.rootCauses : [];
 
     for (const act of activities) {
-      if (act.hoursPerWeek !== null && typeof act.hoursPerWeek === 'number') {
-        pAgg.timedCount += 1;
-      }
       if (
         (act.category === 'Internal Failure' || act.category === 'External Failure') &&
         typeof act.hoursPerWeek === 'number'
       ) {
-        const matchedCause =
+        const matchedRc =
           rootCauses.find((rc) =>
             rc.failure?.toLowerCase().includes(act.activity.toLowerCase().slice(0, 15))
-          )?.cause ||
-          rootCauses[0]?.cause ||
-          'Not specified';
+          ) || rootCauses[0];
         failureRows.push({
           activity: act.activity,
           category: act.category,
-          code: act.code || 'None',
+          code: formatBaselineCode(act.code || 'None', codeTitles),
           hoursPerWeek: act.hoursPerWeek,
-          cause: matchedCause,
+          cause: matchedRc?.cause || 'Not specified',
+          needsApproval: Boolean(matchedRc?.needsApproval),
+          peakOnly: Boolean(act.peakOnly),
           roleCategory,
         });
       }
@@ -387,22 +408,25 @@ export function computeLedgerAggregates(rawAudits: Array<Record<string, unknown>
 
     for (const rc of rootCauses) {
       rootCauseEntries.push({
-        processCode: pCode,
+        processCode: pCodeLabel,
         roleCategory,
         failure: rc.failure,
         cause: rc.cause,
         contributingFactors: rc.contributingFactors || [],
+        needsApproval: Boolean(rc.needsApproval),
       });
     }
 
     const kaizens = Array.isArray(sheet.kaizenActions) ? sheet.kaizenActions : [];
     for (const k of kaizens) {
       kaizenEntries.push({
-        processCode: pCode,
+        rawProcessCode: pCode,
+        processCode: pCodeLabel,
         step: k.step,
+        target: cleanStr(k.target, 200),
         owner: k.owner,
         measure: k.measure,
-        code: k.code || 'None',
+        code: formatBaselineCode(k.code || 'None', codeTitles),
       });
     }
 
@@ -437,14 +461,22 @@ export function computeLedgerAggregates(rawAudits: Array<Record<string, unknown>
     );
     const copq = roundTwo(p['Internal Failure'] + p['External Failure']);
     const share = total > 0 ? Math.round((copq / total) * 100) : 0;
+    const catsWithHours = [
+      p.Prevention,
+      p.Appraisal,
+      p['Internal Failure'],
+      p['External Failure'],
+    ].filter((v) => v > 0).length;
+
     let level: AuditLevel = 'Not enough data';
-    if (p.timedCount >= 2 && total > 0) {
+    if (catsWithHours >= 2 && total > 0) {
       if (share <= 25) level = 'Healthy';
       else if (share <= 40) level = 'Watch';
       else level = 'High';
     }
     return {
-      processCode: p.code,
+      rawProcessCode: p.code,
+      processCode: formatBaselineCode(p.code, codeTitles),
       processes: Array.from(p.names),
       auditCount: p.auditCount,
       Prevention: p.Prevention,
@@ -461,7 +493,9 @@ export function computeLedgerAggregates(rawAudits: Array<Record<string, unknown>
   failureRows.sort((a, b) => b.hoursPerWeek - a.hoursPerWeek);
 
   const watchOrHighCodes = new Set(
-    processAreas.filter((p) => p.level === 'Watch' || p.level === 'High').map((p) => p.processCode)
+    processAreas
+      .filter((p) => p.level === 'Watch' || p.level === 'High')
+      .map((p) => p.rawProcessCode)
   );
 
   const stats = {
@@ -479,11 +513,13 @@ export function computeLedgerAggregates(rawAudits: Array<Record<string, unknown>
   return {
     stats,
     categoryBreakdown,
-    processAreas,
+    processAreas: processAreas.map(({ rawProcessCode: _raw, ...rest }) => rest),
     topFailures: failureRows.slice(0, 5),
     rootCauseEntries,
-    kaizenForPriorityAreas: kaizenEntries.filter((k) => watchOrHighCodes.has(k.processCode)),
-    allKaizen: kaizenEntries,
+    kaizenForPriorityAreas: kaizenEntries
+      .filter((k) => watchOrHighCodes.has(k.rawProcessCode))
+      .map(({ rawProcessCode: _raw, ...rest }) => rest),
+    allKaizen: kaizenEntries.map(({ rawProcessCode: _raw, ...rest }) => rest),
     strengthEntries,
   };
 }

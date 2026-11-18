@@ -7,10 +7,12 @@ import {
   ClipboardList,
   Clock,
   Layers,
+  Lightbulb,
   Percent,
   RefreshCw,
   Users,
 } from 'lucide-react';
+import { formatBaselineCode, isClosingMessage } from '../../shared/costMath';
 import { PafCategoryChip } from '../lib/display';
 import {
   OperationType,
@@ -32,6 +34,7 @@ import {
 } from '../types/audit';
 
 interface AdminLedgerPageProps {
+  codeTitles?: Record<string, string>;
   onNotify: (toast: { type: 'error' | 'success' | 'info'; message: string }) => void;
 }
 
@@ -41,12 +44,25 @@ interface FailureRow {
   category: 'Internal Failure' | 'External Failure';
   code: string;
   hoursPerWeek: number | null;
+  peakOnly: boolean;
   cause: string;
+  needsApproval: boolean;
   roleCategory: string;
   dateLabel: string;
 }
 
-export function AdminLedgerPage({ onNotify }: AdminLedgerPageProps) {
+interface KaizenLedgerRow {
+  audit: CostAudit;
+  processName: string;
+  step: string;
+  target: string;
+  owner: string;
+  measure: string;
+  code: string;
+  roleCategory: string;
+}
+
+export function AdminLedgerPage({ codeTitles = {}, onNotify }: AdminLedgerPageProps) {
   const [audits, setAudits] = useState<CostAudit[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -129,19 +145,25 @@ export function AdminLedgerPage({ onNotify }: AdminLedgerPageProps) {
         Appraisal: number;
         'Internal Failure': number;
         'External Failure': number;
-        timedCount: number;
       }
     >();
 
     const failures: FailureRow[] = [];
+    const kaizens: KaizenLedgerRow[] = [];
 
     for (const audit of completedAudits) {
       people.add(audit.userId);
       const sheet = audit.costSheet!;
-      totals.Prevention += sheet.categoryTotals.Prevention || 0;
-      totals.Appraisal += sheet.categoryTotals.Appraisal || 0;
-      totals['Internal Failure'] += sheet.categoryTotals['Internal Failure'] || 0;
-      totals['External Failure'] += sheet.categoryTotals['External Failure'] || 0;
+      const catTotals = sheet.categoryTotals || {
+        Prevention: 0,
+        Appraisal: 0,
+        'Internal Failure': 0,
+        'External Failure': 0,
+      };
+      totals.Prevention += catTotals.Prevention || 0;
+      totals.Appraisal += catTotals.Appraisal || 0;
+      totals['Internal Failure'] += catTotals['Internal Failure'] || 0;
+      totals['External Failure'] += catTotals['External Failure'] || 0;
 
       const pCode = sheet.processCode || 'None';
       if (!processMap.has(pCode)) {
@@ -152,36 +174,50 @@ export function AdminLedgerPage({ onNotify }: AdminLedgerPageProps) {
           Appraisal: 0,
           'Internal Failure': 0,
           'External Failure': 0,
-          timedCount: 0,
         });
       }
       const pRow = processMap.get(pCode)!;
       pRow.audits += 1;
-      pRow.Prevention += sheet.categoryTotals.Prevention || 0;
-      pRow.Appraisal += sheet.categoryTotals.Appraisal || 0;
-      pRow['Internal Failure'] += sheet.categoryTotals['Internal Failure'] || 0;
-      pRow['External Failure'] += sheet.categoryTotals['External Failure'] || 0;
+      pRow.Prevention += catTotals.Prevention || 0;
+      pRow.Appraisal += catTotals.Appraisal || 0;
+      pRow['Internal Failure'] += catTotals['Internal Failure'] || 0;
+      pRow['External Failure'] += catTotals['External Failure'] || 0;
+
+      const rootCauses = Array.isArray(sheet.rootCauses) ? sheet.rootCauses : [];
+      const roleCategory = audit.profileSnapshot?.roleCategory || 'Support Office';
 
       for (const act of sheet.activities || []) {
-        if (act.hoursPerWeek !== null) pRow.timedCount += 1;
         if (act.category === 'Internal Failure' || act.category === 'External Failure') {
-          const matchedCause =
-            sheet.rootCauses?.find((rc) =>
+          const matchedRc =
+            rootCauses.find((rc) =>
               rc.failure?.toLowerCase().includes(act.activity.toLowerCase().slice(0, 14))
-            )?.cause ||
-            sheet.rootCauses?.[0]?.cause ||
-            'Not specified';
+            ) || rootCauses[0];
           failures.push({
             audit,
             activity: act.activity,
             category: act.category,
             code: act.code || 'None',
             hoursPerWeek: act.hoursPerWeek,
-            cause: matchedCause,
-            roleCategory: audit.profileSnapshot?.roleCategory || 'Support Office',
+            peakOnly: Boolean(act.peakOnly),
+            cause: matchedRc?.cause || 'Not specified',
+            needsApproval: Boolean(matchedRc?.needsApproval),
+            roleCategory,
             dateLabel: formatTimestamp(audit.completedAt || audit.createdAt),
           });
         }
+      }
+
+      for (const k of sheet.kaizenActions || []) {
+        kaizens.push({
+          audit,
+          processName: sheet.processName || 'Work Process',
+          step: k.step,
+          target: k.target || '',
+          owner: k.owner,
+          measure: k.measure,
+          code: k.code || pCode,
+          roleCategory,
+        });
       }
     }
 
@@ -198,8 +234,15 @@ export function AdminLedgerPage({ onNotify }: AdminLedgerPageProps) {
         p.Prevention + p.Appraisal + p['Internal Failure'] + p['External Failure'];
       const pCopq = p['Internal Failure'] + p['External Failure'];
       const pShare = pTotal > 0 ? Math.round((pCopq / pTotal) * 100) : 0;
+      const catsWithHours = [
+        p.Prevention,
+        p.Appraisal,
+        p['Internal Failure'],
+        p['External Failure'],
+      ].filter((v) => v > 0).length;
+
       let level: AuditLevel = 'Not enough data';
-      if (p.timedCount >= 2 && pTotal > 0) {
+      if (catsWithHours >= 2 && pTotal > 0) {
         if (pShare <= 25) level = 'Healthy';
         else if (pShare <= 40) level = 'Watch';
         else level = 'High';
@@ -218,6 +261,7 @@ export function AdminLedgerPage({ onNotify }: AdminLedgerPageProps) {
       totals,
       processRows,
       failures,
+      kaizens,
     };
   }, [completedAudits]);
 
@@ -365,7 +409,9 @@ export function AdminLedgerPage({ onNotify }: AdminLedgerPageProps) {
                   const style = LEVEL_STYLES[row.level];
                   return (
                     <tr key={row.code} className="hover:bg-slate-50">
-                      <td className="px-4 py-3 font-mono font-bold text-[#1E40AF]">{row.code}</td>
+                      <td className="px-4 py-3 font-semibold text-[#1E40AF]">
+                        {formatBaselineCode(row.code, codeTitles)}
+                      </td>
                       <td className="px-4 py-3 text-right">{row.audits}</td>
                       <td className="px-4 py-3 text-right">{row.Prevention.toFixed(1)}</td>
                       <td className="px-4 py-3 text-right">{row.Appraisal.toFixed(1)}</td>
@@ -468,20 +514,91 @@ export function AdminLedgerPage({ onNotify }: AdminLedgerPageProps) {
                     onClick={() => void openAuditDetail(row.audit)}
                     className="hover:bg-blue-50/60 cursor-pointer transition-colors"
                   >
-                    <td className="px-4 py-3 font-semibold text-slate-900">{row.activity}</td>
+                    <td className="px-4 py-3 font-semibold text-slate-900">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span>{row.activity}</span>
+                        {row.peakOnly && (
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200 whitespace-nowrap">
+                            Peak periods
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <PafCategoryChip category={row.category} />
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs text-[#1E40AF]">{row.code}</td>
+                    <td className="px-4 py-3 text-xs font-semibold text-[#1E40AF]">
+                      {formatBaselineCode(row.code, codeTitles)}
+                    </td>
                     <td className="px-4 py-3 text-right font-bold">
                       {row.hoursPerWeek !== null ? row.hoursPerWeek.toFixed(1) : '—'}
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-600 max-w-xs truncate">
-                      {row.cause}
+                    <td className="px-4 py-3 text-xs text-slate-600 max-w-xs">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="truncate">{row.cause}</span>
+                        {row.needsApproval && (
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-50 text-purple-800 border border-purple-200 whitespace-nowrap">
+                            Needs approval
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-700">{row.roleCategory}</td>
                     <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
                       {row.dateLabel}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Kaizen Actions & Targets */}
+      <div className="bg-white border border-[#E2E8F0] rounded-2xl shadow-sm overflow-hidden animate-fade-rise">
+        <div className="px-6 py-4 border-b border-[#E2E8F0] flex items-center gap-2">
+          <Lightbulb className="w-4 h-4 text-[#F97316]" />
+          <h2 className="text-base font-extrabold text-slate-900">
+            Kaizen Actions &amp; Targets ({summary.kaizens.length})
+          </h2>
+        </div>
+
+        {summary.kaizens.length === 0 ? (
+          <div className="p-8 text-center text-sm text-slate-600">
+            Kaizen actions and targets from completed audits will appear here.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left tabular-nums">
+              <thead className="bg-slate-50 border-b border-[#E2E8F0] text-xs font-bold text-slate-600">
+                <tr>
+                  <th className="px-4 py-3">Process</th>
+                  <th className="px-4 py-3">Code</th>
+                  <th className="px-4 py-3">Kaizen Step</th>
+                  <th className="px-4 py-3">Employee Target</th>
+                  <th className="px-4 py-3">Owner</th>
+                  <th className="px-4 py-3">Measure</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {summary.kaizens.map((k, idx) => (
+                  <tr
+                    key={`${k.audit.id}-kaizen-${idx}`}
+                    onClick={() => void openAuditDetail(k.audit)}
+                    className="hover:bg-blue-50/60 cursor-pointer transition-colors"
+                  >
+                    <td className="px-4 py-3 font-semibold text-slate-900">{k.processName}</td>
+                    <td className="px-4 py-3 text-xs font-semibold text-[#1E40AF]">
+                      {formatBaselineCode(k.code, codeTitles)}
+                    </td>
+                    <td className="px-4 py-3 text-slate-800">{k.step}</td>
+                    <td className="px-4 py-3 text-xs font-semibold text-[#1E40AF]">
+                      {k.target || '—'}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-700">{k.owner}</td>
+                    <td className="px-4 py-3 text-xs text-green-700 font-semibold">
+                      {k.measure || '—'}
                     </td>
                   </tr>
                 ))}
@@ -626,39 +743,44 @@ export function AdminLedgerPage({ onNotify }: AdminLedgerPageProps) {
             </div>
 
             {detailTab === 'sheet' && selectedAudit.costSheet ? (
-              <CostSheetView sheet={selectedAudit.costSheet} />
+              <CostSheetView sheet={selectedAudit.costSheet} codeTitles={codeTitles} />
             ) : transcriptLoading ? (
               <div className="h-32 bg-slate-100 rounded-xl animate-pulse" />
             ) : transcript.length === 0 ? (
               <p className="text-sm text-slate-500">No messages recorded for this audit.</p>
             ) : (
               <div className="space-y-3">
-                {transcript.map((m) => (
-                  <div
-                    key={m.id}
-                    className={`p-4 rounded-xl border ${
-                      m.role === 'assistant'
-                        ? 'bg-white border-[#E2E8F0]'
-                        : 'bg-[#EFF6FF] border-[#BFDBFE]'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between text-xs font-bold mb-1">
-                      <span className={m.role === 'assistant' ? 'text-[#F97316]' : 'text-[#1E40AF]'}>
-                        {m.role === 'assistant'
-                          ? `Audit Partner · Q${m.questionNumber}`
-                          : 'Employee'}
-                      </span>
-                      <span className="font-normal text-slate-400">
-                        {formatTimestamp(m.timestamp)}
-                      </span>
+                {transcript.map((m, idx) => {
+                  const closingMsg = isClosingMessage(transcript, idx);
+                  return (
+                    <div
+                      key={m.id}
+                      className={`p-4 rounded-xl border ${
+                        m.role === 'assistant'
+                          ? 'bg-white border-[#E2E8F0]'
+                          : 'bg-[#EFF6FF] border-[#BFDBFE]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-xs font-bold mb-1">
+                        <span className={m.role === 'assistant' ? 'text-[#F97316]' : 'text-[#1E40AF]'}>
+                          {m.role === 'assistant'
+                            ? closingMsg
+                              ? 'Audit Partner · Closing'
+                              : `Audit Partner · Q${m.questionNumber}`
+                            : 'Employee'}
+                        </span>
+                        <span className="font-normal text-slate-400">
+                          {formatTimestamp(m.timestamp)}
+                        </span>
+                      </div>
+                      {m.role === 'assistant' ? (
+                        <MarkdownContent text={m.content} className="text-sm" />
+                      ) : (
+                        <p className="text-sm text-slate-900 whitespace-pre-wrap">{m.content}</p>
+                      )}
                     </div>
-                    {m.role === 'assistant' ? (
-                      <MarkdownContent text={m.content} className="text-sm" />
-                    ) : (
-                      <p className="text-sm text-slate-900 whitespace-pre-wrap">{m.content}</p>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

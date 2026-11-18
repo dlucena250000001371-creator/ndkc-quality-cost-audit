@@ -55,7 +55,10 @@
         "questionNumber": { "type": "integer" },
         "answerCount": { "type": "integer" },
         "profileSnapshot": { "type": "object" },
-        "costSheet": { "type": "object" },
+        "costSheet": {
+          "type": "object",
+          "description": "Quality Cost Sheet including statedHours, checks, confirmedByEmployee, and hoursEdited."
+        },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" },
         "completedAt": { "type": "string", "format": "date-time" }

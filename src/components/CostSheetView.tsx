@@ -1,4 +1,5 @@
-import { AlertCircle, BarChart3, Lightbulb, Sparkles } from 'lucide-react';
+import { AlertCircle, BarChart3, CheckCircle2, Clock, Lightbulb, Sparkles } from 'lucide-react';
+import { CATEGORY_TO_STATED_KEY, COST_CATEGORIES, formatBaselineCode } from '../../shared/costMath';
 import { PafCategoryIcon } from '../lib/display';
 import {
   CATEGORY_COLORS,
@@ -8,15 +9,19 @@ import {
 } from '../types/audit';
 import { CategoryStackedBar } from './CategoryStackedBar';
 
-const CATEGORIES: CostCategory[] = [
-  'Prevention',
-  'Appraisal',
-  'Internal Failure',
-  'External Failure',
-];
-
-export function CostSheetView({ sheet }: { sheet: CostSheet }) {
+export function CostSheetView({
+  sheet,
+  codeTitles = {},
+}: {
+  sheet: CostSheet;
+  codeTitles?: Record<string, string>;
+}) {
   const levelStyle = LEVEL_STYLES[sheet.level] || LEVEL_STYLES['Not enough data'];
+  const activities = Array.isArray(sheet.activities) ? sheet.activities : [];
+  const rootCauses = Array.isArray(sheet.rootCauses) ? sheet.rootCauses : [];
+  const kaizenActions = Array.isArray(sheet.kaizenActions) ? sheet.kaizenActions : [];
+  const strengths = Array.isArray(sheet.strengths) ? sheet.strengths : [];
+  const checks = Array.isArray(sheet.checks) ? sheet.checks : [];
 
   return (
     <div className="space-y-6">
@@ -25,9 +30,26 @@ export function CostSheetView({ sheet }: { sheet: CostSheet }) {
         <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
-              <span>Process Code: {sheet.processCode || 'None'}</span>
+              <span>Process Code: {formatBaselineCode(sheet.processCode || 'None', codeTitles)}</span>
               <span aria-hidden="true">·</span>
               <span>Built {new Date(sheet.builtAt).toLocaleDateString()}</span>
+              {sheet.confirmedByEmployee !== undefined && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="inline-flex items-center gap-1 text-green-700 font-bold">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>
+                      {sheet.confirmedByEmployee ? 'Confirmed by employee' : 'Pending confirmation'}
+                    </span>
+                  </span>
+                </>
+              )}
+              {sheet.hoursEdited !== undefined && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>{sheet.hoursEdited ? 'Hours edited' : 'Hours unedited'}</span>
+                </>
+              )}
             </div>
             <h2 className="text-2xl font-extrabold text-slate-900">{sheet.processName}</h2>
           </div>
@@ -63,12 +85,58 @@ export function CostSheetView({ sheet }: { sheet: CostSheet }) {
           </h3>
           <CategoryStackedBar totals={sheet.categoryTotals} />
         </div>
+
+        {sheet.statedHours && (
+          <div className="pt-4 border-t border-slate-100 space-y-2.5">
+            <h3 className="text-xs font-extrabold uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5 text-[#1E40AF]" />
+              <span>Employee-Stated Hours by Category</span>
+            </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {COST_CATEGORIES.map((cat: CostCategory) => {
+                const entry = sheet.statedHours?.[CATEGORY_TO_STATED_KEY[cat]];
+                return (
+                  <div
+                    key={cat}
+                    className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 space-y-1 text-xs"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-slate-800">{cat}</span>
+                      <span className="font-extrabold text-slate-900 tabular-nums">
+                        {entry?.hours !== null && entry?.hours !== undefined
+                          ? `${entry.hours} hrs`
+                          : 'Not stated'}
+                      </span>
+                    </div>
+                    {entry?.said && (
+                      <div className="text-slate-600 italic">&ldquo;{entry.said}&rdquo;</div>
+                    )}
+                    {entry?.peakNote && (
+                      <div className="text-amber-800 font-semibold">Peak: {entry.peakNote}</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {checks.length > 0 && (
+          <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 space-y-1">
+            <div className="text-xs font-extrabold text-amber-900">Hours Consistency Checks</div>
+            <ul className="list-disc pl-4 space-y-0.5 text-xs text-amber-900">
+              {checks.map((chk, idx) => (
+                <li key={idx}>{chk}</li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       {/* Four Category Columns */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        {CATEGORIES.map((cat) => {
-          const items = sheet.activities.filter((a) => a.category === cat);
+        {COST_CATEGORIES.map((cat) => {
+          const items = activities.filter((a) => a.category === cat);
           const color = CATEGORY_COLORS[cat];
           const catTotal = sheet.categoryTotals[cat] ?? 0;
 
@@ -99,13 +167,20 @@ export function CostSheetView({ sheet }: { sheet: CostSheet }) {
                       key={`${cat}-${idx}`}
                       className="p-3 rounded-xl bg-slate-50 border border-slate-100 space-y-1.5"
                     >
-                      <div className="text-sm font-bold text-slate-900 leading-snug">
-                        {item.activity}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="text-sm font-bold text-slate-900 leading-snug">
+                          {item.activity}
+                        </div>
+                        {item.peakOnly && (
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200 whitespace-nowrap shrink-0">
+                            Peak periods
+                          </span>
+                        )}
                       </div>
                       <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-600 tabular-nums">
                         <span className="font-semibold text-slate-800">
                           {item.hoursPerWeek !== null
-                            ? `${item.hoursPerWeek} hrs/wk`
+                            ? `${item.hoursPerWeek} hrs/wk${item.hoursSource ? ` (${item.hoursSource})` : ''}`
                             : 'Hours not given'}
                         </span>
                         {item.frequency && (
@@ -118,7 +193,7 @@ export function CostSheetView({ sheet }: { sheet: CostSheet }) {
                           <>
                             <span aria-hidden="true">·</span>
                             <span className="font-mono text-[#1E40AF] font-semibold">
-                              {item.code}
+                              {formatBaselineCode(item.code, codeTitles)}
                             </span>
                           </>
                         )}
@@ -144,15 +219,22 @@ export function CostSheetView({ sheet }: { sheet: CostSheet }) {
             <AlertCircle className="w-4 h-4 text-[#F59E0B]" />
             <span>Root Causes</span>
           </h3>
-          {sheet.rootCauses.length === 0 ? (
+          {rootCauses.length === 0 ? (
             <p className="text-sm text-slate-500">No root causes captured.</p>
           ) : (
             <div className="space-y-3">
-              {sheet.rootCauses.map((rc, idx) => (
+              {rootCauses.map((rc, idx) => (
                 <div key={idx} className="p-3 rounded-xl bg-slate-50 border border-slate-100 space-y-1.5">
-                  <div className="text-xs font-bold text-amber-800">{rc.failure}</div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="text-xs font-bold text-amber-800">{rc.failure}</div>
+                    {rc.needsApproval && (
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-purple-50 text-purple-800 border border-purple-200 whitespace-nowrap shrink-0">
+                        Needs approval
+                      </span>
+                    )}
+                  </div>
                   <div className="text-sm font-semibold text-slate-900">{rc.cause}</div>
-                  {rc.contributingFactors.length > 0 && (
+                  {Array.isArray(rc.contributingFactors) && rc.contributingFactors.length > 0 && (
                     <div className="text-xs text-slate-600">
                       Factors: {rc.contributingFactors.join(' · ')}
                     </div>
@@ -173,19 +255,26 @@ export function CostSheetView({ sheet }: { sheet: CostSheet }) {
             <Lightbulb className="w-4 h-4 text-[#F97316]" />
             <span>Kaizen Actions</span>
           </h3>
-          {sheet.kaizenActions.length === 0 ? (
+          {kaizenActions.length === 0 ? (
             <p className="text-sm text-slate-500">No Kaizen actions captured.</p>
           ) : (
             <div className="space-y-3">
-              {sheet.kaizenActions.map((k, idx) => (
+              {kaizenActions.map((k, idx) => (
                 <div key={idx} className="p-3 rounded-xl bg-slate-50 border border-slate-100 space-y-1.5">
                   <div className="text-sm font-bold text-slate-900">{k.step}</div>
+                  {k.target && (
+                    <div className="text-xs font-semibold text-[#1E40AF]">
+                      Target: {k.target}
+                    </div>
+                  )}
                   <div className="text-xs text-slate-600 flex flex-wrap gap-x-2 gap-y-0.5">
                     <span>Owner: {k.owner}</span>
                     {k.code && k.code !== 'None' && (
                       <>
                         <span aria-hidden="true">·</span>
-                        <span className="font-mono text-[#1E40AF] font-semibold">{k.code}</span>
+                        <span className="font-mono text-[#1E40AF] font-semibold">
+                          {formatBaselineCode(k.code, codeTitles)}
+                        </span>
                       </>
                     )}
                   </div>
@@ -205,11 +294,11 @@ export function CostSheetView({ sheet }: { sheet: CostSheet }) {
             <Sparkles className="w-4 h-4 text-[#16A34A]" />
             <span>Strengths Already in Place</span>
           </h3>
-          {sheet.strengths.length === 0 ? (
+          {strengths.length === 0 ? (
             <p className="text-sm text-slate-500">No strengths recorded.</p>
           ) : (
             <ul className="space-y-2">
-              {sheet.strengths.map((s, idx) => (
+              {strengths.map((s, idx) => (
                 <li
                   key={idx}
                   className="p-3 rounded-xl bg-green-50/70 border border-green-100 text-sm text-slate-800"

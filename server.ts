@@ -32,6 +32,9 @@ import {
   validateProfileFields,
 } from './server/validation.ts';
 import {
+  extractBaselineCodeTitles,
+} from './shared/costMath.ts';
+import {
   MAX_CHAT_MESSAGE_CHARS,
   buildWelcomeMessage,
   type BaselineDoc,
@@ -340,10 +343,17 @@ async function startServer() {
         `Years in role: ${String(profileDoc.yearsInRole ?? 0)}`,
       ].join('\n');
 
+      let userAnswersSeen = 0;
       const transcript = sortedInteractions
         .map((m) => {
           const speaker = m.role === 'assistant' ? 'Audit Partner' : 'Employee';
-          const qTag = m.questionNumber ? ` [Q${m.questionNumber}]` : '';
+          let qTag = '';
+          if (m.role === 'assistant') {
+            qTag = userAnswersSeen >= 7 ? ' [Closing]' : m.questionNumber ? ` [Q${m.questionNumber}]` : '';
+          } else {
+            userAnswersSeen++;
+            qTag = m.questionNumber ? ` [Q${m.questionNumber}]` : '';
+          }
           return `${speaker}${qTag}: ${String(m.content || '')}`;
         })
         .join('\n\n');
@@ -357,6 +367,16 @@ async function startServer() {
         auditDate,
       });
 
+      const statedCategorySchema = {
+        type: Type.OBJECT,
+        properties: {
+          hours: { type: Type.NUMBER, nullable: true },
+          said: { type: Type.STRING },
+          peakNote: { type: Type.STRING },
+        },
+        required: ['hours', 'said', 'peakNote'],
+      };
+
       const { text: jsonText, modelUsed } = await generateContentWithFallback({
         contents: promptText,
         config: {
@@ -367,6 +387,16 @@ async function startServer() {
               processName: { type: Type.STRING },
               processCode: { type: Type.STRING },
               summary: { type: Type.STRING },
+              statedHours: {
+                type: Type.OBJECT,
+                properties: {
+                  prevention: statedCategorySchema,
+                  appraisal: statedCategorySchema,
+                  internalFailure: statedCategorySchema,
+                  externalFailure: statedCategorySchema,
+                },
+                required: ['prevention', 'appraisal', 'internalFailure', 'externalFailure'],
+              },
               activities: {
                 type: Type.ARRAY,
                 items: {
@@ -378,6 +408,7 @@ async function startServer() {
                     },
                     activity: { type: Type.STRING },
                     hoursPerWeek: { type: Type.NUMBER, nullable: true },
+                    peakOnly: { type: Type.BOOLEAN },
                     frequency: { type: Type.STRING },
                     code: { type: Type.STRING },
                     evidenceQuote: { type: Type.STRING },
@@ -386,6 +417,7 @@ async function startServer() {
                     'category',
                     'activity',
                     'hoursPerWeek',
+                    'peakOnly',
                     'frequency',
                     'code',
                     'evidenceQuote',
@@ -403,9 +435,16 @@ async function startServer() {
                       type: Type.ARRAY,
                       items: { type: Type.STRING },
                     },
+                    needsApproval: { type: Type.BOOLEAN },
                     evidenceQuote: { type: Type.STRING },
                   },
-                  required: ['failure', 'cause', 'contributingFactors', 'evidenceQuote'],
+                  required: [
+                    'failure',
+                    'cause',
+                    'contributingFactors',
+                    'needsApproval',
+                    'evidenceQuote',
+                  ],
                 },
               },
               kaizenActions: {
@@ -414,11 +453,12 @@ async function startServer() {
                   type: Type.OBJECT,
                   properties: {
                     step: { type: Type.STRING },
+                    target: { type: Type.STRING },
                     owner: { type: Type.STRING },
                     measure: { type: Type.STRING },
                     code: { type: Type.STRING },
                   },
-                  required: ['step', 'owner', 'measure', 'code'],
+                  required: ['step', 'target', 'owner', 'measure', 'code'],
                 },
               },
               strengths: {
@@ -430,6 +470,7 @@ async function startServer() {
               'processName',
               'processCode',
               'summary',
+              'statedHours',
               'activities',
               'rootCauses',
               'kaizenActions',
@@ -494,8 +535,15 @@ async function startServer() {
         return;
       }
 
-      const audits = await runCollectionGroupQuery('costAudits', user.idToken);
-      const aggregates = computeLedgerAggregates(audits);
+      const [audits, baselineDoc] = await Promise.all([
+        runCollectionGroupQuery('costAudits', user.idToken),
+        getFirestoreDoc('settings/qualityBaseline', user.idToken),
+      ]);
+      const baselineDocs = Array.isArray(baselineDoc?.documents)
+        ? (baselineDoc!.documents as BaselineDoc[])
+        : [];
+      const codeTitles = extractBaselineCodeTitles(baselineDocs);
+      const aggregates = computeLedgerAggregates(audits, codeTitles);
       const today = new Date().toISOString().slice(0, 10);
 
       const promptText = fillPromptTemplate(PROMPT_3_TEMPLATE, {

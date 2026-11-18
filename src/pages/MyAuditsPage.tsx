@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { ArrowLeft, ClipboardList, MessageSquareText, Play } from 'lucide-react';
 import { OperationType, db, formatTimestamp, handleFirestoreError, toMillis } from '../lib/firebase';
+import { formatBaselineCode, isClosingMessage } from '../../shared/costMath';
 import { CostSheetView } from '../components/CostSheetView';
 import { MarkdownContent } from '../components/MarkdownContent';
 import { LEVEL_STYLES, type CostAudit, type InteractionMessage } from '../types/audit';
@@ -10,6 +11,7 @@ interface MyAuditsPageProps {
   uid: string;
   audits: CostAudit[];
   auditsLoading: boolean;
+  codeTitles?: Record<string, string>;
   onResumeInterview: (auditId: string) => void;
   onStartNewAudit: () => void;
   onNotify: (toast: { type: 'error' | 'success' | 'info'; message: string }) => void;
@@ -19,6 +21,7 @@ export function MyAuditsPage({
   uid,
   audits,
   auditsLoading,
+  codeTitles = {},
   onResumeInterview,
   onStartNewAudit,
   onNotify,
@@ -124,7 +127,7 @@ export function MyAuditsPage({
         </div>
 
         {isCompleted && viewMode === 'sheet' && selectedAudit.costSheet ? (
-          <CostSheetView sheet={selectedAudit.costSheet} />
+          <CostSheetView sheet={selectedAudit.costSheet} codeTitles={codeTitles} />
         ) : (
           <div className="bg-white border border-[#E2E8F0] rounded-2xl shadow-sm p-6 space-y-4 animate-fade-rise">
             <h2 className="text-lg font-extrabold text-slate-900 flex items-center gap-2">
@@ -137,32 +140,37 @@ export function MyAuditsPage({
               <p className="text-sm text-slate-500">No messages recorded in this audit.</p>
             ) : (
               <div className="space-y-3">
-                {transcript.map((m) => (
-                  <div
-                    key={m.id}
-                    className={`p-4 rounded-xl border ${
-                      m.role === 'assistant'
-                        ? 'bg-white border-[#E2E8F0]'
-                        : 'bg-[#EFF6FF] border-[#BFDBFE]'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between text-xs font-bold mb-1.5">
-                      <span className={m.role === 'assistant' ? 'text-[#F97316]' : 'text-[#1E40AF]'}>
-                        {m.role === 'assistant'
-                          ? `Audit Partner · Q${m.questionNumber}`
-                          : 'Your answer'}
-                      </span>
-                      <span className="font-normal text-slate-400">
-                        {formatTimestamp(m.timestamp)}
-                      </span>
+                {transcript.map((m, idx) => {
+                  const closingMsg = isClosingMessage(transcript, idx);
+                  return (
+                    <div
+                      key={m.id}
+                      className={`p-4 rounded-xl border ${
+                        m.role === 'assistant'
+                          ? 'bg-white border-[#E2E8F0]'
+                          : 'bg-[#EFF6FF] border-[#BFDBFE]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-xs font-bold mb-1.5">
+                        <span className={m.role === 'assistant' ? 'text-[#F97316]' : 'text-[#1E40AF]'}>
+                          {m.role === 'assistant'
+                            ? closingMsg
+                              ? 'Audit Partner · Closing'
+                              : `Audit Partner · Q${m.questionNumber}`
+                            : 'Your answer'}
+                        </span>
+                        <span className="font-normal text-slate-400">
+                          {formatTimestamp(m.timestamp)}
+                        </span>
+                      </div>
+                      {m.role === 'assistant' ? (
+                        <MarkdownContent text={m.content} className="text-sm" />
+                      ) : (
+                        <p className="text-sm text-slate-900 whitespace-pre-wrap">{m.content}</p>
+                      )}
                     </div>
-                    {m.role === 'assistant' ? (
-                      <MarkdownContent text={m.content} className="text-sm" />
-                    ) : (
-                      <p className="text-sm text-slate-900 whitespace-pre-wrap">{m.content}</p>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -259,9 +267,12 @@ export function MyAuditsPage({
                 </div>
 
                 {sheet ? (
-                  <div className="flex items-center gap-5 text-xs text-slate-600 pt-2 border-t border-slate-100 tabular-nums">
+                  <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-slate-600 pt-2 border-t border-slate-100 tabular-nums">
                     <span>
-                      Code: <strong className="text-slate-900">{sheet.processCode}</strong>
+                      Code:{' '}
+                      <strong className="text-slate-900">
+                        {formatBaselineCode(sheet.processCode, codeTitles)}
+                      </strong>
                     </span>
                     <span>
                       Total: <strong className="text-slate-900">{sheet.totalHours.toFixed(1)} hrs</strong>

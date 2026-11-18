@@ -73,12 +73,14 @@ service cloud.firestore {
         sheet.keys().hasAll([
           'processName', 'processCode', 'summary', 'activities', 'rootCauses',
           'kaizenActions', 'strengths', 'categoryTotals', 'totalHours',
-          'copqHours', 'copqShare', 'level', 'builtAt'
+          'copqHours', 'copqShare', 'level', 'builtAt',
+          'statedHours', 'checks', 'confirmedByEmployee', 'hoursEdited'
         ]) &&
         sheet.keys().hasOnly([
           'processName', 'processCode', 'summary', 'activities', 'rootCauses',
           'kaizenActions', 'strengths', 'categoryTotals', 'totalHours',
-          'copqHours', 'copqShare', 'level', 'builtAt'
+          'copqHours', 'copqShare', 'level', 'builtAt',
+          'statedHours', 'checks', 'confirmedByEmployee', 'hoursEdited'
         ]) &&
         sheet.processName is string && sheet.processName.size() <= 150 &&
         sheet.processCode is string && sheet.processCode.size() <= 40 &&
@@ -92,7 +94,11 @@ service cloud.firestore {
         sheet.copqHours is number && sheet.copqHours >= 0 &&
         sheet.copqShare is number && sheet.copqShare >= 0 && sheet.copqShare <= 100 &&
         sheet.level in ['Healthy', 'Watch', 'High', 'Not enough data'] &&
-        sheet.builtAt is string && sheet.builtAt.size() <= 60
+        sheet.builtAt is string && sheet.builtAt.size() <= 60 &&
+        sheet.statedHours is map &&
+        sheet.checks is list && sheet.checks.size() <= 10 &&
+        sheet.confirmedByEmployee is bool &&
+        sheet.hoursEdited is bool
       );
     }
 

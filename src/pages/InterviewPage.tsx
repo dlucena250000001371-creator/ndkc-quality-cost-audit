@@ -10,16 +10,26 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import {
+  AlertTriangle,
   CheckCircle2,
   Circle,
   FileQuestion,
   FileSpreadsheet,
   MessageSquareText,
   RefreshCw,
+  RotateCcw,
   Send,
 } from 'lucide-react';
+import {
+  CATEGORY_TO_STATED_KEY,
+  COST_CATEGORIES,
+  createEmptyStatedHours,
+  hasTimeRange,
+  recomputeCostSheetWithInputs,
+  roundTwo,
+} from '../../shared/costMath';
 import { ApiRequestError, apiFetch } from '../lib/api';
-import { formatWelcomeTextTitleCase, getPartBorderColor } from '../lib/display';
+import { PafCategoryIcon, formatWelcomeTextTitleCase, getPartBorderColor } from '../lib/display';
 import {
   OperationType,
   db,
@@ -34,8 +44,10 @@ import { MarkdownContent } from '../components/MarkdownContent';
 import { ModalDialog } from '../components/ModalDialog';
 import {
   INTERVIEW_PARTS,
+  LEVEL_STYLES,
   MAX_CHAT_MESSAGE_CHARS,
   type CostAudit,
+  type CostCategory,
   type CostSheet,
   type InteractionMessage,
 } from '../types/audit';
@@ -43,6 +55,7 @@ import {
 interface InterviewPageProps {
   uid: string;
   auditId: string | null;
+  codeTitles?: Record<string, string>;
   getIdToken: () => Promise<string>;
   onStartNewAudit: () => void;
   onNotify: (toast: {
@@ -111,9 +124,19 @@ function ProgressRing({ completed, total = 7 }: { completed: number; total?: num
   );
 }
 
+function buildInitialInputs(sheet: CostSheet): Record<CostCategory, string> {
+  return {
+    Prevention: String(sheet.categoryTotals?.Prevention ?? 0),
+    Appraisal: String(sheet.categoryTotals?.Appraisal ?? 0),
+    'Internal Failure': String(sheet.categoryTotals?.['Internal Failure'] ?? 0),
+    'External Failure': String(sheet.categoryTotals?.['External Failure'] ?? 0),
+  };
+}
+
 export function InterviewPage({
   uid,
   auditId,
+  codeTitles = {},
   getIdToken,
   onStartNewAudit,
   onNotify,
@@ -131,12 +154,25 @@ export function InterviewPage({
   const [confirmSheetOpen, setConfirmSheetOpen] = useState(false);
   const [buildingSheet, setBuildingSheet] = useState(false);
 
+  // Step 2: Check-your-hours in-memory review state before saving
+  const [initialPendingSheet, setInitialPendingSheet] = useState<CostSheet | null>(null);
+  const [hourInputs, setHourInputs] = useState<Record<CostCategory, string>>({
+    Prevention: '0',
+    Appraisal: '0',
+    'Internal Failure': '0',
+    'External Failure': '0',
+  });
+  const [savingFinalSheet, setSavingFinalSheet] = useState(false);
+
   const pendingClientMsgIdRef = useRef<string | null>(null);
   const lastSavedUserTextRef = useRef<string | null>(null);
   const scrollBottomRef = useRef<HTMLDivElement | null>(null);
 
   // Read-only listeners for the active audit and its interactions
   useEffect(() => {
+    setInitialPendingSheet(null);
+    setSavingFinalSheet(false);
+
     if (!uid || !auditId) {
       setAudit(null);
       setMessages([]);
@@ -214,16 +250,20 @@ export function InterviewPage({
     scrollBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, thinking]);
 
-  // Pair Audit Partner questions with Employee answers directly below
+  // Pair Audit Partner questions with Employee answers and detect the Closing turn accurately
   const pairedTurns = useMemo(() => {
     const turns: Array<{
       assistant: InteractionMessage;
       user?: InteractionMessage;
+      isClosing: boolean;
     }> = [];
+    let userAnswersSeen = 0;
+
     for (const msg of messages) {
       if (msg.role === 'assistant') {
-        turns.push({ assistant: msg });
+        turns.push({ assistant: msg, isClosing: userAnswersSeen >= 7 });
       } else if (msg.role === 'user') {
+        userAnswersSeen++;
         if (turns.length > 0 && !turns[turns.length - 1].user) {
           turns[turns.length - 1].user = msg;
         } else {
@@ -240,6 +280,7 @@ export function InterviewPage({
               clientMessageId: '',
             },
             user: msg,
+            isClosing: false,
           });
         }
       }
@@ -251,6 +292,52 @@ export function InterviewPage({
     () => messages.filter((m) => m.role === 'user').length,
     [messages]
   );
+
+  // Live recomputation of pending sheet as employee checks/edits category hours
+  const { previewSheet, hoursEdited, inputValidationError } = useMemo(() => {
+    if (!initialPendingSheet) {
+      return { previewSheet: null, hoursEdited: false, inputValidationError: null as string | null };
+    }
+
+    const baseStated = initialPendingSheet.statedHours || createEmptyStatedHours();
+    const editedValues: Record<CostCategory, number | null> = {
+      Prevention: 0,
+      Appraisal: 0,
+      'Internal Failure': 0,
+      'External Failure': 0,
+    };
+
+    let anyEdited = false;
+    let validationErr: string | null = null;
+
+    for (const cat of COST_CATEGORIES) {
+      const rawStr = (hourInputs[cat] ?? '').trim();
+      const parsed = rawStr === '' ? NaN : Number(rawStr);
+      const initialCatTotal = roundTwo(initialPendingSheet.categoryTotals?.[cat] ?? 0);
+
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 80) {
+        validationErr = `${cat} hours must be a number between 0 and 80.`;
+        editedValues[cat] = baseStated[CATEGORY_TO_STATED_KEY[cat]]?.hours ?? null;
+      } else {
+        const rounded = roundTwo(parsed);
+        const changed = Math.abs(rounded - initialCatTotal) > 0.001;
+        if (changed) {
+          anyEdited = true;
+          editedValues[cat] = rounded;
+        } else {
+          const origStated = baseStated[CATEGORY_TO_STATED_KEY[cat]]?.hours;
+          editedValues[cat] = origStated !== undefined ? origStated : null;
+        }
+      }
+    }
+
+    const recomputed = recomputeCostSheetWithInputs(initialPendingSheet, editedValues);
+    return {
+      previewSheet: recomputed,
+      hoursEdited: anyEdited,
+      inputValidationError: validationErr,
+    };
+  }, [initialPendingSheet, hourInputs]);
 
   const currentQuestionNum = audit?.questionNumber || 1;
   const isClosingReached = answerCount >= 7;
@@ -385,6 +472,7 @@ export function InterviewPage({
     void submitMessage();
   };
 
+  // Builds the Quality Cost Sheet in memory; does NOT save to Firestore until employee confirms
   const handleBuildCostSheet = async () => {
     if (!auditId || buildingSheet) return;
     setConfirmSheetOpen(false);
@@ -397,21 +485,11 @@ export function InterviewPage({
         body: { auditId },
       });
 
-      const auditRef = doc(db, 'users', uid, 'costAudits', auditId);
-      const batch = writeBatch(db);
-      batch.update(
-        auditRef,
-        stripUndefined({
-          status: 'completed',
-          costSheet,
-          completedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        })
-      );
-      await withTimeout(batch.commit(), 15000, 'Saving Quality Cost Sheet timed out.');
+      setInitialPendingSheet(costSheet);
+      setHourInputs(buildInitialInputs(costSheet));
       onNotify({
-        type: 'success',
-        message: 'Quality Cost Sheet built and saved.',
+        type: 'info',
+        message: 'Please review your recorded hours before saving.',
       });
     } catch (err) {
       const msg =
@@ -426,6 +504,66 @@ export function InterviewPage({
       });
     } finally {
       setBuildingSheet(false);
+    }
+  };
+
+  const handleUndoHourChanges = () => {
+    if (!initialPendingSheet) return;
+    setHourInputs(buildInitialInputs(initialPendingSheet));
+  };
+
+  const handleSaveConfirmedSheet = async () => {
+    if (!auditId || !previewSheet || savingFinalSheet) return;
+    if (inputValidationError) {
+      onNotify({ type: 'error', message: inputValidationError });
+      return;
+    }
+    if (!navigator.onLine) {
+      onNotify({
+        type: 'error',
+        message: 'You appear to be offline. Reconnect to save your Quality Cost Sheet.',
+        actionLabel: 'Retry Save',
+        onAction: () => void handleSaveConfirmedSheet(),
+      });
+      return;
+    }
+
+    setSavingFinalSheet(true);
+    try {
+      const finalSheet: CostSheet = {
+        ...previewSheet,
+        confirmedByEmployee: true,
+        hoursEdited,
+      };
+
+      const auditRef = doc(db, 'users', uid, 'costAudits', auditId);
+      const batch = writeBatch(db);
+      batch.update(
+        auditRef,
+        stripUndefined({
+          status: 'completed',
+          costSheet: finalSheet,
+          completedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        })
+      );
+      await withTimeout(batch.commit(), 15000, 'Saving Quality Cost Sheet timed out.');
+      setInitialPendingSheet(null);
+      onNotify({
+        type: 'success',
+        message: 'Quality Cost Sheet confirmed and saved.',
+      });
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : 'Failed to save Quality Cost Sheet.';
+      onNotify({
+        type: 'error',
+        message: msg,
+        actionLabel: 'Retry Save',
+        onAction: () => void handleSaveConfirmedSheet(),
+      });
+    } finally {
+      setSavingFinalSheet(false);
     }
   };
 
@@ -503,7 +641,183 @@ export function InterviewPage({
             Start Another Interview
           </button>
         </div>
-        <CostSheetView sheet={audit.costSheet} />
+        <CostSheetView sheet={audit.costSheet} codeTitles={codeTitles} />
+      </div>
+    );
+  }
+
+  // Step 2: Check-your-hours confirmation card (unsaved in memory until confirmed)
+  if (initialPendingSheet && previewSheet) {
+    const stated = previewSheet.statedHours || createEmptyStatedHours();
+    const previewLevelStyle =
+      LEVEL_STYLES[previewSheet.level] || LEVEL_STYLES['Not enough data'];
+    const checksList = previewSheet.checks || [];
+
+    return (
+      <div className="p-4 md:p-8 space-y-6">
+        <div className="bg-white border-2 border-[#1E40AF] rounded-2xl shadow-sm p-6 md:p-7 space-y-5 animate-fade-rise">
+          <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pb-4 border-b border-slate-100">
+            <div className="space-y-1">
+              <div className="text-xs font-extrabold uppercase tracking-wider text-[#F97316]">
+                Check Your Hours Before Saving
+              </div>
+              <h1 className="text-xl md:text-2xl font-extrabold text-slate-900">
+                Here&apos;s what I recorded. Is this right?
+              </h1>
+              <p className="text-sm text-slate-600">
+                Adjust any category&apos;s weekly hours below if needed, then save your Quality Cost
+                Sheet. Nothing is saved until you click &ldquo;Yes, save my sheet&rdquo;.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setInitialPendingSheet(null)}
+              disabled={savingFinalSheet}
+              className="text-xs font-bold text-[#1E40AF] hover:underline self-start cursor-pointer"
+            >
+              Back to interview
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {COST_CATEGORIES.map((cat) => {
+              const key = CATEGORY_TO_STATED_KEY[cat];
+              const entry = stated[key];
+              const hasRange = hasTimeRange(entry?.said || '');
+              const inputId = `check-hours-${key}`;
+
+              return (
+                <div
+                  key={cat}
+                  className="p-4 rounded-2xl bg-slate-50 border border-[#E2E8F0] space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <label
+                      htmlFor={inputId}
+                      className="flex items-center gap-2 text-sm font-extrabold text-slate-900"
+                    >
+                      <PafCategoryIcon category={cat} className="w-4 h-4 shrink-0" />
+                      <span>{cat}</span>
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        id={inputId}
+                        type="number"
+                        min={0}
+                        max={80}
+                        step={0.5}
+                        value={hourInputs[cat]}
+                        onChange={(e) =>
+                          setHourInputs((prev) => ({ ...prev, [cat]: e.target.value }))
+                        }
+                        className="w-24 px-3 py-1.5 text-sm font-extrabold text-right text-slate-900 bg-white border border-[#E2E8F0] rounded-xl tabular-nums focus:outline-none focus:ring-2 focus:ring-[#1E40AF]"
+                      />
+                      <span className="text-xs font-bold text-slate-500">hrs/wk</span>
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-slate-600 space-y-1">
+                    <div>
+                      <span className="font-bold text-slate-700">You said:</span>{' '}
+                      {entry?.said ? (
+                        <span className="italic">&ldquo;{entry.said}&rdquo;</span>
+                      ) : (
+                        <span className="text-slate-400">No category total stated</span>
+                      )}
+                    </div>
+                    {hasRange && (
+                      <div>
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-blue-50 text-[#1E40AF] border border-blue-200">
+                          higher number used
+                        </span>
+                      </div>
+                    )}
+                    {entry?.peakNote && (
+                      <div className="text-amber-800 font-semibold">
+                        Peak period: {entry.peakNote}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {inputValidationError && (
+            <div
+              role="alert"
+              className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs font-bold text-red-800"
+            >
+              {inputValidationError}
+            </div>
+          )}
+
+          {checksList.length > 0 && (
+            <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 space-y-1">
+              <div className="flex items-center gap-1.5 text-xs font-extrabold text-amber-900">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>Hours Checks</span>
+              </div>
+              <ul className="list-disc pl-5 text-xs text-amber-900 space-y-0.5">
+                {checksList.map((chk, idx) => (
+                  <li key={idx}>{chk}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Live Total, COPQ Share & Level + Actions */}
+          <div className="pt-4 border-t border-slate-100 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-5 text-sm tabular-nums">
+              <div>
+                <span className="text-slate-500 font-semibold">Total: </span>
+                <span className="font-extrabold text-slate-900">
+                  {previewSheet.totalHours.toFixed(1)} hrs/wk
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-500 font-semibold">COPQ Share: </span>
+                <span className="font-extrabold text-slate-900">
+                  {previewSheet.copqShare}% ({previewSheet.copqHours.toFixed(1)} hrs)
+                </span>
+              </div>
+              <span
+                className={`px-3 py-1 rounded-xl text-xs font-bold border ${previewLevelStyle.bg} ${previewLevelStyle.text} ${previewLevelStyle.border}`}
+              >
+                {previewSheet.level}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleUndoHourChanges}
+                disabled={!hoursEdited || savingFinalSheet}
+                className="px-4 py-2.5 text-sm font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>Undo my changes</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSaveConfirmedSheet()}
+                disabled={savingFinalSheet || Boolean(inputValidationError)}
+                className="btn-coral px-5 py-2.5 text-sm font-extrabold rounded-xl transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-60"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{savingFinalSheet ? 'Saving Sheet...' : 'Yes, save my sheet'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Live Preview of the Quality Cost Sheet */}
+        <div className="space-y-2">
+          <div className="text-xs font-extrabold uppercase tracking-wider text-slate-500 px-1">
+            Quality Cost Sheet Preview (Unsaved)
+          </div>
+          <CostSheetView sheet={previewSheet} codeTitles={codeTitles} />
+        </div>
       </div>
     );
   }
@@ -518,12 +832,10 @@ export function InterviewPage({
           {pairedTurns.map((turn, idx) => {
             const qNum = turn.assistant.questionNumber || 1;
             const partMeta = INTERVIEW_PARTS.find((p) => p.num === qNum);
-            const isClosingCard =
-              idx === pairedTurns.length - 1 && isClosingReached && !turn.user;
-            const badgeText = isClosingCard
+            const badgeText = turn.isClosing
               ? 'Closing'
               : `Q${qNum} · ${partMeta?.label || 'Interview'}`;
-            const partColor = getPartBorderColor(qNum, isClosingCard);
+            const partColor = getPartBorderColor(qNum, turn.isClosing);
             const displayBody =
               idx === 0
                 ? formatWelcomeTextTitleCase(turn.assistant.content)
@@ -717,7 +1029,7 @@ export function InterviewPage({
             {answerCount < 5
               ? `Available after 5 answers (${5 - answerCount} remaining).`
               : isClosingReached
-                ? 'All 7 parts answered. Click above to generate your sheet.'
+                ? 'All 7 parts answered. Click above to review and build your sheet.'
                 : 'You can build now or finish all 7 questions first.'}
           </p>
         </div>
@@ -730,8 +1042,8 @@ export function InterviewPage({
       >
         <div className="space-y-4">
           <p className="text-sm text-slate-700 leading-relaxed">
-            This will analyze your interview transcript to generate your Quality Cost Sheet and
-            mark this audit as completed. You will no longer add new answers to this session.
+            This will analyze your interview transcript and prepare your Quality Cost Sheet so you
+            can review and confirm your weekly hours before saving.
           </p>
           <div className="flex items-center justify-end gap-2.5">
             <button

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
 import {
   collection,
@@ -33,7 +33,8 @@ import { InterviewPage } from './pages/InterviewPage';
 import { LandingPage } from './pages/LandingPage';
 import { MyAuditsPage } from './pages/MyAuditsPage';
 import { ProfilePage } from './pages/ProfilePage';
-import { buildWelcomeMessage, type CostAudit, type UserProfile } from './types/audit';
+import { extractBaselineCodeTitles } from '../shared/costMath';
+import { buildWelcomeMessage, type BaselineDoc, type CostAudit, type UserProfile } from './types/audit';
 
 interface MeResponse {
   uid: string;
@@ -56,6 +57,12 @@ export default function App() {
 
   const [audits, setAudits] = useState<CostAudit[]>([]);
   const [auditsLoading, setAuditsLoading] = useState(false);
+
+  const [baselineDocs, setBaselineDocs] = useState<BaselineDoc[]>([]);
+  const codeTitles = useMemo(
+    () => extractBaselineCodeTitles(baselineDocs),
+    [baselineDocs]
+  );
 
   const [activeTab, setActiveTab] = useState<NavTab>('home');
   const [activeAuditId, setActiveAuditId] = useState<string | null>(null);
@@ -120,6 +127,7 @@ export default function App() {
         setAdminSetupNeeded(false);
         setProfile(null);
         setAudits([]);
+        setBaselineDocs([]);
         setActiveAuditId(null);
         setActiveTab('home');
         return;
@@ -171,7 +179,25 @@ export default function App() {
         }
       );
 
-      listenersRef.current = [unsubProfile, unsubAudits];
+      const unsubBaseline = onSnapshot(
+        doc(db, 'settings', 'qualityBaseline'),
+        (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            setBaselineDocs(
+              Array.isArray(data?.documents) ? (data.documents as BaselineDoc[]) : []
+            );
+          } else {
+            setBaselineDocs([]);
+          }
+        },
+        () => {
+          // Non-fatal if baseline hasn't been initialized yet
+          setBaselineDocs([]);
+        }
+      );
+
+      listenersRef.current = [unsubProfile, unsubAudits, unsubBaseline];
     });
 
     return () => {
@@ -370,6 +396,7 @@ export default function App() {
           <InterviewPage
             uid={user.uid}
             auditId={fallbackAuditId}
+            codeTitles={codeTitles}
             getIdToken={getIdToken}
             onStartNewAudit={() => void handleStartInterview()}
             onNotify={pushToast}
@@ -381,6 +408,7 @@ export default function App() {
             uid={user.uid}
             audits={audits}
             auditsLoading={auditsLoading}
+            codeTitles={codeTitles}
             onResumeInterview={(id) => {
               setActiveAuditId(id);
               setActiveTab('interview');
@@ -395,12 +423,13 @@ export default function App() {
         )}
 
         {isAdmin && activeTab === 'admin-ledger' && (
-          <AdminLedgerPage onNotify={pushToast} />
+          <AdminLedgerPage codeTitles={codeTitles} onNotify={pushToast} />
         )}
 
         {isAdmin && activeTab === 'admin-reports' && (
           <AdminReportsPage
             uid={user.uid}
+            codeTitles={codeTitles}
             getIdToken={getIdToken}
             onNotify={pushToast}
           />

@@ -32,10 +32,28 @@ export interface BaselineDoc {
   uploadedAt: string;
 }
 
+export type HoursSource = 'own' | 'split';
+
+export type StatedCategoryKey =
+  | 'prevention'
+  | 'appraisal'
+  | 'internalFailure'
+  | 'externalFailure';
+
+export interface StatedCategoryHours {
+  hours: number | null;
+  said: string;
+  peakNote: string;
+}
+
+export type StatedHoursMap = Record<StatedCategoryKey, StatedCategoryHours>;
+
 export interface QualityCostActivity {
   category: CostCategory;
   activity: string;
   hoursPerWeek: number | null;
+  hoursSource?: HoursSource;
+  peakOnly?: boolean;
   frequency: string;
   code: string;
   evidenceQuote: string;
@@ -45,11 +63,13 @@ export interface RootCauseItem {
   failure: string;
   cause: string;
   contributingFactors: string[];
+  needsApproval?: boolean;
   evidenceQuote: string;
 }
 
 export interface KaizenAction {
   step: string;
+  target?: string;
   owner: string;
   measure: string;
   code: string;
@@ -66,6 +86,7 @@ export interface CostSheet {
   processName: string;
   processCode: string;
   summary: string;
+  statedHours?: StatedHoursMap;
   activities: QualityCostActivity[];
   rootCauses: RootCauseItem[];
   kaizenActions: KaizenAction[];
@@ -75,6 +96,9 @@ export interface CostSheet {
   copqHours: number;
   copqShare: number;
   level: AuditLevel;
+  checks?: string[];
+  confirmedByEmployee?: boolean;
+  hoursEdited?: boolean;
   builtAt: string;
 }
 

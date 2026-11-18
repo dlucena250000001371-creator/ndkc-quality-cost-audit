@@ -29,6 +29,12 @@ import {
   toMillis,
   withTimeout,
 } from '../lib/firebase';
+import {
+  CATEGORY_TO_STATED_KEY,
+  COST_CATEGORIES,
+  formatBaselineCode,
+  isClosingMessage,
+} from '../../shared/costMath';
 import { MarkdownContent } from '../components/MarkdownContent';
 import { ModalDialog } from '../components/ModalDialog';
 import type {
@@ -40,6 +46,7 @@ import type {
 
 interface AdminReportsPageProps {
   uid: string;
+  codeTitles?: Record<string, string>;
   getIdToken: () => Promise<string>;
   onNotify: (toast: {
     type: 'error' | 'success' | 'info';
@@ -67,7 +74,12 @@ function triggerMarkdownDownload(filename: string, content: string) {
   URL.revokeObjectURL(url);
 }
 
-export function AdminReportsPage({ uid, getIdToken, onNotify }: AdminReportsPageProps) {
+export function AdminReportsPage({
+  uid,
+  codeTitles = {},
+  getIdToken,
+  onNotify,
+}: AdminReportsPageProps) {
   const [reports, setReports] = useState<LedgerReport[]>([]);
   const [loadingReports, setLoadingReports] = useState(true);
 
@@ -232,8 +244,15 @@ export function AdminReportsPage({ uid, getIdToken, onNotify }: AdminReportsPage
         if (msgs.length === 0) {
           lines.push('_No messages recorded._');
         } else {
-          for (const m of msgs) {
-            const speaker = m.role === 'assistant' ? `Audit Partner (Q${m.questionNumber})` : 'Employee';
+          for (let i = 0; i < msgs.length; i++) {
+            const m = msgs[i];
+            const closingMsg = isClosingMessage(msgs, i);
+            const speaker =
+              m.role === 'assistant'
+                ? closingMsg
+                  ? 'Audit Partner (Closing)'
+                  : `Audit Partner (Q${m.questionNumber})`
+                : 'Employee';
             const timeStr = formatTimestamp(m.timestamp);
             lines.push(`- **[${timeStr}] ${speaker}:** ${m.content.replace(/\r?\n/g, ' ')}`);
           }
@@ -243,37 +262,84 @@ export function AdminReportsPage({ uid, getIdToken, onNotify }: AdminReportsPage
         if (audit.costSheet) {
           const sheet = audit.costSheet;
           lines.push('### Quality Cost Sheet');
-          lines.push(`- **Process**: ${sheet.processName} (${sheet.processCode})`);
+          lines.push(
+            `- **Process**: ${sheet.processName} (${formatBaselineCode(sheet.processCode, codeTitles)})`
+          );
           lines.push(`- **Summary**: ${sheet.summary}`);
+          lines.push(
+            `- **Confirmation**: Confirmed by employee: ${
+              sheet.confirmedByEmployee === undefined
+                ? 'Not recorded'
+                : sheet.confirmedByEmployee
+                  ? 'Yes'
+                  : 'No'
+            } | Hours edited: ${
+              sheet.hoursEdited === undefined
+                ? 'Not recorded'
+                : sheet.hoursEdited
+                  ? 'Yes'
+                  : 'No'
+            }`
+          );
           lines.push(
             `- **Totals**: Total = ${sheet.totalHours} hrs/wk | Prevention = ${sheet.categoryTotals.Prevention} hrs | Appraisal = ${sheet.categoryTotals.Appraisal} hrs | Internal Failure = ${sheet.categoryTotals['Internal Failure']} hrs | External Failure = ${sheet.categoryTotals['External Failure']} hrs`
           );
           lines.push(
             `- **COPQ**: ${sheet.copqHours} hrs/wk (${sheet.copqShare}%) — **Level**: ${sheet.level}`
           );
+          if (sheet.statedHours) {
+            lines.push('');
+            lines.push('#### Stated Category Hours');
+            for (const cat of COST_CATEGORIES) {
+              const entry = sheet.statedHours[CATEGORY_TO_STATED_KEY[cat]];
+              const hrsText =
+                entry?.hours !== null && entry?.hours !== undefined
+                  ? `${entry.hours} hrs/wk`
+                  : 'Not stated';
+              const saidText = entry?.said ? ` | Said: "${entry.said}"` : '';
+              const peakText = entry?.peakNote ? ` | Peak note: "${entry.peakNote}"` : '';
+              lines.push(`- **${cat}**: ${hrsText}${saidText}${peakText}`);
+            }
+          }
+          if (Array.isArray(sheet.checks) && sheet.checks.length > 0) {
+            lines.push('');
+            lines.push('#### Hours Checks');
+            for (const chk of sheet.checks) {
+              lines.push(`- ${chk}`);
+            }
+          }
           lines.push('');
           lines.push('#### Activities');
           for (const act of sheet.activities || []) {
             lines.push(
               `- [${act.category}] **${act.activity}** | Hours/wk: ${
                 act.hoursPerWeek ?? 'Not specified'
-              } | Frequency: ${act.frequency || '—'} | Code: ${act.code} | Quote: "${act.evidenceQuote}"`
+              } | Source: ${act.hoursSource || '—'} | Peak periods only: ${
+                act.peakOnly ? 'Yes' : 'No'
+              } | Frequency: ${act.frequency || '—'} | Code: ${formatBaselineCode(
+                act.code,
+                codeTitles
+              )} | Quote: "${act.evidenceQuote}"`
             );
           }
           lines.push('');
           lines.push('#### Root Causes');
           for (const rc of sheet.rootCauses || []) {
             lines.push(
-              `- **${rc.failure}**: ${rc.cause} (Factors: ${
-                (rc.contributingFactors || []).join(', ') || 'None'
-              }) | Quote: "${rc.evidenceQuote}"`
+              `- **${rc.failure}**: ${rc.cause} | Needs approval: ${
+                rc.needsApproval ? 'Yes' : 'No'
+              } (Factors: ${(rc.contributingFactors || []).join(', ') || 'None'}) | Quote: "${
+                rc.evidenceQuote
+              }"`
             );
           }
           lines.push('');
           lines.push('#### Kaizen Actions');
           for (const k of sheet.kaizenActions || []) {
             lines.push(
-              `- **${k.step}** | Owner: ${k.owner} | Measure: ${k.measure} | Code: ${k.code}`
+              `- **${k.step}** | Target: ${k.target || '—'} | Owner: ${k.owner} | Measure: ${
+                k.measure
+              } | Code: ${formatBaselineCode(k.code, codeTitles)}`
             );
           }
           lines.push('');
